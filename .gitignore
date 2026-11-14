@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.venv/
+.tools/
+public/data/
+screenshots/
+*.log
+__pycache__/

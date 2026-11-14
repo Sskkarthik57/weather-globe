@@ -1,0 +1,19 @@
+{
+  "name": "weather-globe",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "playwright-core": "1.65.1",
+    "vite": "8.3.8"
+  }
+}
