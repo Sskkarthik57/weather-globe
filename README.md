@@ -81,7 +81,20 @@ node scripts\check.mjs
 
 ## 4. Put it on the internet for free (GitHub Pages)
 
-Do this once. After that, a robot on GitHub refreshes the data every 6 hours and republishes the site.
+**Already done.** The site is live at **https://sskkarthik57.github.io/weather-globe/**. The code is at https://github.com/Sskkarthik57/weather-globe, and the data refreshes automatically every 6 hours.
+
+To publish changes later, paste this in a terminal in the project folder (portable Git and the GitHub tool are in `.tools`):
+
+```powershell
+$env:Path = "$PWD\.tools\gh\bin;$PWD\.tools\git\cmd;$PWD\.tools\node-v26.13.1-win-x64;" + $env:Path
+git add -A
+git commit -m "Describe your change"
+git push
+```
+
+To refresh the data right now without waiting: GitHub → your repository → **Actions** → **Update data and deploy** → **Run workflow**.
+
+Starting from scratch on a new account instead? Do this once. After that, a robot on GitHub refreshes the data every 6 hours and republishes the site.
 
 1. Create a free account at https://github.com.
 2. Create a new **empty** repository (for example `weather-globe`). Don't add a README there.
