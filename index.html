@@ -66,9 +66,13 @@
   </div>
 
   <nav class="layers" aria-label="Map layers">
-    <button class="layer-btn" data-layer="temp" aria-pressed="true">
+    <button class="layer-btn" data-layer="temp" aria-pressed="true" aria-label="Temperature">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a2 2 0 0 1 4 0v9.5a4 4 0 1 1-4 0z"/><path d="M12 9v7"/></svg>
-      <span>Temperature</span>
+      <span data-short="Temp">Temperature</span>
+    </button>
+    <button class="layer-btn" data-layer="aq" aria-pressed="false" aria-label="Air quality">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="8" r="2"/><circle cx="15" cy="6" r="1.5"/><circle cx="17" cy="13" r="2.5"/><circle cx="9" cy="16" r="1.5"/><circle cx="12" cy="11" r="1"/><circle cx="6" cy="20" r="1"/><circle cx="15" cy="19" r="1"/></svg>
+      <span data-short="AQI">Air quality</span>
     </button>
     <button class="layer-btn" data-layer="wind" aria-pressed="true">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9h11a3 3 0 1 0-3-3"/><path d="M3 15h15a3 3 0 1 1-3 3"/><path d="M3 12h7"/></svg>
@@ -120,6 +124,8 @@
     <button id="credits-btn" class="link-btn" aria-expanded="false" aria-controls="credits">Sources &amp; credits</button>
     <div id="credits" class="credits" hidden>
       <p><strong>Temperature &amp; wind:</strong> <a href="https://www.nco.ncep.noaa.gov/pmb/products/gfs/" target="_blank" rel="noopener">NOAA GFS</a> 1° forecast (public domain), via the <a href="https://registry.opendata.aws/noaa-gfs-bdp-pds/" target="_blank" rel="noopener">NOAA Open Data Dissemination program</a>.</p>
+      <p><strong>Air quality map:</strong> <a href="https://registry.opendata.aws/noaa-gefs/" target="_blank" rel="noopener">NOAA GEFS-Aerosols</a> surface PM2.5 and PM10 (public domain), converted to the US EPA AQI; natural sea-salt spray excluded. Model estimate, not station measurements.</p>
+      <p><strong>Air quality on click:</strong> <a href="https://open-meteo.com/en/docs/air-quality-api" target="_blank" rel="noopener">Open-Meteo Air Quality API</a>, generated using Copernicus Atmosphere Monitoring Service (CAMS) information.</p>
       <p><strong>Tropical cyclones:</strong> <a href="https://www.gdacs.org" target="_blank" rel="noopener">GDACS</a> (European Commission JRC &amp; UN OCHA), track data from the originating warning centres. Not for decision-making — follow your national weather service.</p>
       <p><strong>Local forecast &amp; place search:</strong> <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo.com</a> (CC BY 4.0).</p>
       <p><strong>Place names on click:</strong> <a href="https://nominatim.org" target="_blank" rel="noopener">Nominatim</a>, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL).</p>

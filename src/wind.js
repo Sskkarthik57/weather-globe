@@ -16,7 +16,7 @@ uniform float dataMix;
 uniform vec2 wRange;
 ${DATA_UV_GLSL}
 vec2 windAt(vec2 p) {
-  vec2 duv = dataUv(p);
+  vec2 duv = gridUv(p, vec2(textureSize(dataA, 0)));
   vec2 a = texture(dataA, duv).gb;
   vec2 b = texture(dataB, duv).gb;
   return mix(vec2(wRange.x), vec2(wRange.y), mix(a, b, dataMix)); // m/s, x east, y north

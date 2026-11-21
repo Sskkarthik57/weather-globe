@@ -1,11 +1,14 @@
-# Fetches fresh GFS + cyclone data every 6 hours, builds the site and publishes it to GitHub Pages.
+# Checks for fresh weather, air-quality and cyclone data every hour, and rebuilds + publishes the
+# site to GitHub Pages whenever NOAA has released a new model run (or at least every 3 hours).
 # Data files are generated here and deployed directly; they are not committed to the repository.
+# Free: GitHub Actions minutes are unlimited for public repositories.
 name: Update data and deploy
 
 on:
   schedule:
-    # GFS runs at 00/06/12/18 UTC and is complete out to 72 h roughly 4-5 h later
-    - cron: '35 4,10,16,22 * * *'
+    # hourly; NOAA publishes a new GFS run every 6 h, ~4-5 h after 00/06/12/18 UTC, so an hourly
+    # check picks each one up within about an hour of release
+    - cron: '17 * * * *'
   workflow_dispatch: {}
   push:
     branches: [main]
@@ -22,7 +25,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    outputs:
+      skip: ${{ steps.data.outputs.skip }}
     steps:
       - uses: actions/checkout@v7
 
@@ -35,27 +40,41 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r scripts/requirements.txt
 
-      - name: Download weather data
-        run: python scripts/update_data.py
+      - name: Download weather, air-quality and cyclone data
+        id: data
+        env:
+          # scheduled runs skip the rebuild when the live site is already current
+          SITE: ${{ github.event_name == 'schedule' && format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) || '' }}
+        run: |
+          if [ -n "$SITE" ]; then
+            python scripts/update_data.py --skip-if-current "$SITE"
+          else
+            python scripts/update_data.py
+          fi
 
       - uses: actions/setup-node@v7
+        if: steps.data.outputs.skip != 'true'
         with:
           node-version: lts/*
           cache: npm
 
       - name: Build site
+        if: steps.data.outputs.skip != 'true'
         run: |
           npm ci
           npm run build
 
       - uses: actions/configure-pages@v6
+        if: steps.data.outputs.skip != 'true'
 
       - uses: actions/upload-pages-artifact@v5
+        if: steps.data.outputs.skip != 'true'
         with:
           path: dist
 
   deploy:
     needs: build
+    if: needs.build.outputs.skip != 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

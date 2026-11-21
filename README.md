@@ -3,6 +3,7 @@
 A spinning 3D Earth in your browser. It shows:
 
 - **Temperature**: a coloured map of air temperature 2 m above the ground.
+- **Air quality**: a pollution map showing the US Air Quality Index (AQI), Good to Hazardous. Clicking a place shows its AQI score, PM2.5, PM10, ozone and more.
 - **Wind**: glowing streaks that flow with the wind 10 m above the ground.
 - **Cyclones**: active tropical storms worldwide, with past and forecast tracks.
 
@@ -13,6 +14,8 @@ Everything is free. There are no accounts and no API keys.
 | What | Where it comes from |
 |---|---|
 | Temperature and wind maps | NOAA GFS weather model (US government, public domain), downloaded by our own script |
+| Air-quality map | NOAA GEFS-Aerosols model: surface PM2.5 and PM10 (public domain), turned into US AQI by our script, with natural sea-salt spray left out |
+| Air quality when you click | Open-Meteo Air Quality API (CAMS, Copernicus) |
 | Cyclones | GDACS (European Commission and United Nations) |
 | Local forecast and city search | Open-Meteo.com (free for non-commercial use, CC BY 4.0) |
 | Place names when you click | Nominatim / OpenStreetMap |
@@ -54,7 +57,13 @@ This takes about a minute and downloads about 4 MB:
 .\.venv\Scripts\python.exe scripts\update_data.py
 ```
 
-It writes small files into `public\data`. Run it again whenever you want newer data. The weather model updates every 6 hours.
+It writes small files into `public\data` (about 4 MB in total). Run it again whenever you want newer data.
+
+**How fresh is the data?**
+
+- NOAA releases a new weather run (and air-quality run) every 6 hours, about 4–5 hours after 00, 06, 12 and 18 UTC. That's the fastest any free global model updates.
+- The online site checks every hour and republishes as soon as a new run appears, so it's never more than about an hour behind NOAA. Cyclones and air quality are refreshed at least every 3 hours.
+- The click panel (local forecast and AQI) is always live: it asks Open-Meteo at the moment you click.
 
 ## 3. Run it on your PC
 
@@ -81,7 +90,7 @@ node scripts\check.mjs
 
 ## 4. Put it on the internet for free (GitHub Pages)
 
-**Already done.** The site is live at **https://sskkarthik57.github.io/weather-globe/**. The code is at https://github.com/Sskkarthik57/weather-globe, and the data refreshes automatically every 6 hours.
+**Already done.** The site is live at **https://sskkarthik57.github.io/weather-globe/**. The code is at https://github.com/Sskkarthik57/weather-globe. A GitHub robot checks for new data every hour, free because GitHub Actions is unlimited for public repositories.
 
 To publish changes later, paste this in a terminal in the project folder (portable Git and the GitHub tool are in `.tools`):
 

@@ -15,6 +15,30 @@ export const WIND_RAMP = {
   min: 0, max: 30,
   stops: [[0, '#31506e'], [5, '#4f7fb0'], [10, '#7fb6e6'], [16, '#b7e0ff'], [22, '#e4f4ff'], [30, '#ffffff']],
 };
+// US AQI categories (EPA colours, slightly softened for the dark globe). Each category gets an
+// equal share of the colour bar, so the AQI value is mapped piecewise onto 0..1 (see aqiToX).
+export const AQI_CATS = [
+  { max: 50, name: 'Good', color: '#4cc35a', advice: 'Air quality is satisfactory.' },
+  { max: 100, name: 'Moderate', color: '#f2d33f', advice: 'Acceptable; unusually sensitive people should limit long outdoor exertion.' },
+  { max: 150, name: 'Unhealthy for sensitive groups', short: 'Sensitive', color: '#f28c28', advice: 'Children, older adults and people with heart or lung conditions should reduce outdoor exertion.' },
+  { max: 200, name: 'Unhealthy', color: '#e5423f', advice: 'Everyone may feel effects; sensitive groups should avoid long outdoor exertion.' },
+  { max: 300, name: 'Very unhealthy', short: 'V. unhealthy', color: '#9b4fb0', advice: 'Health alert: everyone should reduce outdoor exertion.' },
+  { max: 500, name: 'Hazardous', color: '#8a1c3a', advice: 'Emergency conditions: everyone should avoid outdoor activity.' },
+];
+const AQI_BOUNDS = [0, 50, 100, 150, 200, 300, 500];
+export function aqiToX(a) {
+  const v = clamp(a, 0, 500);
+  let k = 0;
+  while (k < 5 && v > AQI_BOUNDS[k + 1]) k++;
+  return (k + (v - AQI_BOUNDS[k]) / (AQI_BOUNDS[k + 1] - AQI_BOUNDS[k])) / 6;
+}
+export const aqiCategory = (a) => AQI_CATS.find((c) => a <= c.max) || AQI_CATS[5];
+// ramp in "x" space (0..1): colour held through each category with short blends at the boundaries
+export const AQI_RAMP = {
+  min: 0, max: 1,
+  stops: AQI_CATS.flatMap((c, i) => [[i / 6 + 0.02, c.color], [(i + 1) / 6 - 0.02, c.color]]),
+};
+
 // Saffir–Simpson colours (conventional tropical-cyclone palette)
 export const CYCLONE_COLORS = {
   TD: '#5ebaff', TS: '#00faf4', 'Cat 1': '#ffffcc', 'Cat 2': '#ffe775', 'Cat 3': '#ffc140', 'Cat 4': '#ff8f20', 'Cat 5': '#ff6060',
@@ -34,7 +58,7 @@ export function rampPixels(ramp, n = 256) {
   const out = new Uint8Array(n * 4);
   const st = ramp.stops.map(([v, c]) => [v, hexToRgb(c)]);
   for (let i = 0; i < n; i++) {
-    const v = ramp.min + (i / (n - 1)) * (ramp.max - ramp.min);
+    const v = clamp(ramp.min + (i / (n - 1)) * (ramp.max - ramp.min), st[0][0], st[st.length - 1][0]);
     let k = 0;
     while (k < st.length - 2 && v > st[k + 1][0]) k++;
     const [v0, c0] = st[k];

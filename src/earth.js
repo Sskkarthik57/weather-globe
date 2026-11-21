@@ -1,7 +1,7 @@
 // Earth sphere (single shader does basemap, day/night, glint, temperature + wind overlays),
 // atmosphere shell and starfield.
 import * as THREE from 'three';
-import { TEMP_RAMP, rampPixels } from './util.js';
+import { TEMP_RAMP, AQI_RAMP, rampPixels } from './util.js';
 
 export function makeRampTexture(ramp) {
   const t = new THREE.DataTexture(rampPixels(ramp), 256, 1, THREE.RGBAFormat);
@@ -12,12 +12,13 @@ export function makeRampTexture(ramp) {
   return t;
 }
 
-// Shared GLSL: sphere uv (u: lon -180..180, v: lat -90..90) -> GFS data texture uv
+// Shared GLSL: sphere uv (u: lon -180..180, v: lat -90..90) -> uv in a global lat/lon grid texture
+// whose first row is 90°N, first column 0°E, spanning 360° x 180° with `size` texels (e.g. 360x181).
 export const DATA_UV_GLSL = /* glsl */`
-vec2 dataUv(vec2 suv) {
+vec2 gridUv(vec2 suv, vec2 size) {
   float lat = suv.y * 180.0 - 90.0;
   float lon = suv.x * 360.0 - 180.0;
-  return vec2((lon + 0.5) / 360.0, (90.0 - lat + 0.5) / 181.0);
+  return vec2(lon / 360.0 + 0.5 / size.x, ((90.0 - lat) / 180.0 * (size.y - 1.0) + 0.5) / size.y);
 }`;
 
 // Smooth B-spline bicubic sampling using 4 bilinear taps (removes the 1° grid look when zoomed in)
@@ -54,9 +55,9 @@ void main() {
 }`;
 
 const EARTH_FRAG = /* glsl */`
-uniform sampler2D dayTex, nightTex, waterTex, dataA, dataB, rampTex, trailTex;
+uniform sampler2D dayTex, nightTex, waterTex, dataA, dataB, rampTex, trailTex, aqA, aqB, aqRamp;
 uniform vec3 sunDir;
-uniform float dataMix, tempOn, tempOpacity, windOn, atmo, hasData;
+uniform float dataMix, tempOn, tempOpacity, windOn, atmo, hasData, aqOn, aqMix, hasAq;
 uniform vec2 tRange, rampRange;
 varying vec2 vUv;
 varying vec3 vN;
@@ -76,15 +77,29 @@ void main() {
   vec3 lights = pow(night, vec3(1.4)) * vec3(1.0, 0.78, 0.48) * 1.8;
   col += lights * (1.0 - dayAmt);
 
+  float w = texture(waterTex, vUv).r;
   if (atmo > 0.5) {
-    float w = texture(waterTex, vUv).r;
     vec3 H = normalize(sunDir + V);
     float spec = pow(max(dot(N, H), 0.0), 70.0) * w * smoothstep(0.0, 0.2, NdL);
     col += vec3(1.0, 0.93, 0.82) * spec * 0.55;
   }
 
+  if (aqOn > 0.5 && hasAq > 0.5) {
+    vec2 auv = gridUv(vUv, vec2(textureSize(aqA, 0)));
+    float aqi = mix(texBicubic(aqA, auv).r, texBicubic(aqB, auv).r, aqMix) * 500.0;
+    // AQI -> equal-width category position (0..1), matching aqiToX() in util.js
+    float x = aqi <= 50.0 ? aqi / 50.0 : aqi <= 100.0 ? 1.0 + (aqi - 50.0) / 50.0 : aqi <= 150.0 ? 2.0 + (aqi - 100.0) / 50.0
+            : aqi <= 200.0 ? 3.0 + (aqi - 150.0) / 50.0 : aqi <= 300.0 ? 4.0 + (aqi - 200.0) / 100.0 : 5.0 + (aqi - 300.0) / 200.0;
+    vec3 ac = texture(aqRamp, vec2(clamp(x / 6.0, 0.0, 1.0), 0.5)).rgb;
+    float lit = mix(0.26, 1.0, dayAmt);
+    // clean air stays a light tint so the Earth shows through; pollution is vivid; oceans de-emphasised
+    float alpha = mix(0.32, 0.86, smoothstep(20.0, 90.0, aqi)) * mix(1.0, 0.6, w);
+    col = mix(col, ac * lit, alpha);
+    col += lights * (1.0 - dayAmt) * 0.45;
+  }
+
   if (hasData > 0.5) {
-    vec2 duv = dataUv(vUv);
+    vec2 duv = gridUv(vUv, vec2(textureSize(dataA, 0)));
     if (tempOn > 0.5) {
       float d = mix(texBicubic(dataA, duv).r, texBicubic(dataB, duv).r, dataMix);
       float tC = mix(tRange.x, tRange.y, d);
@@ -119,6 +134,8 @@ export class Earth {
       trailTex: { value: null }, sunDir: { value: new THREE.Vector3(1, 0, 0) },
       tRange: { value: new THREE.Vector2(-50, 50) },
       tempOn: { value: 1 }, tempOpacity: { value: 0.82 }, windOn: { value: 0 }, atmo: { value: tier.atmosphere }, hasData: { value: 0 },
+      aqA: { value: null }, aqB: { value: null }, aqMix: { value: 0 }, aqOn: { value: 0 }, hasAq: { value: 0 },
+      aqRamp: { value: makeRampTexture(AQI_RAMP) },
     };
     this.material = new THREE.ShaderMaterial({ vertexShader: EARTH_VERT, fragmentShader: EARTH_FRAG, uniforms: this.uniforms });
     this.mesh = new THREE.Mesh(new THREE.SphereGeometry(1, tier.segments, tier.segments / 2), this.material);

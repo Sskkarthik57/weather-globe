@@ -57,20 +57,34 @@ for (const s of sizes) {
   await page.waitForTimeout(1200);
   await page.screenshot({ path: `${out}/${s.name}-2-cyclones.png` });
   await page.click('#sheet-close');
-  // click / tap the centre of the globe â†’ local weather panel
+  // air-quality layer (should switch temperature off)
+  await page.click('[data-layer="aq"]');
+  await page.waitForTimeout(3000);
+  if (!s.mobile) { await page.mouse.move(s.width / 2, s.height / 2); await page.waitForTimeout(400); }
+  const aqLayer = await page.evaluate(() => ({
+    aqOn: document.querySelector('[data-layer="aq"]').getAttribute('aria-pressed'),
+    tempOn: document.querySelector('[data-layer="temp"]').getAttribute('aria-pressed'),
+    legend: document.getElementById('legend').innerText.replace(/\s+/g, ' '),
+    readout: document.getElementById('readout').hidden ? '' : document.getElementById('readout').innerText.replace(/\s+/g, ' '),
+  }));
+  await page.screenshot({ path: `${out}/${s.name}-2b-airquality.png` });
+  // click / tap the centre of the globe -> local weather + AQI panel
   if (s.mobile) await page.touchscreen.tap(s.width / 2, s.height * 0.45);
   else await page.mouse.click(s.width / 2, s.height / 2);
   await page.waitForSelector('.now-temp', { timeout: 20000 }).catch(() => errors.push('local weather panel did not load'));
+  await page.waitForSelector('.aq-score', { timeout: 20000 }).catch(() => errors.push('AQI score did not load in the panel'));
   await page.waitForTimeout(2500);
-  const place = await page.evaluate(() => document.querySelector('.place-title')?.textContent + ' | ' + document.querySelector('.now-temp')?.textContent);
+  const place = await page.evaluate(() => document.querySelector('.place-title')?.textContent + ' | ' + document.querySelector('.now-temp')?.textContent +
+    ' | AQI ' + document.querySelector('.aq-score')?.textContent + ' ' + document.querySelector('.aq-chip')?.textContent);
   await page.screenshot({ path: `${out}/${s.name}-3-place.png` });
   // search
   await page.click('#sheet-close');
-  await page.fill('#search-input', 'Lagos');
+  await page.fill('#search-input', 'Delhi');
   await page.waitForSelector('#search-results li[role=option]:not(.msg)', { timeout: 10000 }).catch(() => errors.push('search gave no results'));
   await page.keyboard.press('Enter');
   await page.waitForTimeout(3500);
-  const searched = await page.evaluate(() => document.querySelector('.place-title')?.textContent);
+  const searched = await page.evaluate(() => document.querySelector('.place-title')?.textContent + ' | AQI ' + document.querySelector('.aq-score')?.textContent + ' ' + document.querySelector('.aq-chip')?.textContent);
+  Object.assign(info, { aqLayer });
   await page.screenshot({ path: `${out}/${s.name}-4-search.png` });
   let extra = {};
   if (!s.mobile) {

@@ -5,12 +5,12 @@ import { probeDevice, TIERS, AdaptiveQuality } from './quality.js';
 import { GlobeControls } from './controls.js';
 import { Earth, Atmosphere, makeStars, makeRampTexture } from './earth.js';
 import { WindParticles } from './wind.js';
-import { WeatherData } from './data.js';
+import { loadMeta, GridLayer } from './data.js';
 import { Cyclones } from './cyclones.js';
 import { PlacePanel } from './panel.js';
 import { initSearch } from './search.js';
 import {
-  TEMP_RAMP, WIND_RAMP, CYCLONE_COLORS, CYCLONE_NAMES, rampCss, units, store, fmtTemp, fmtSpeedKmh, compass,
+  TEMP_RAMP, WIND_RAMP, CYCLONE_COLORS, CYCLONE_NAMES, AQI_CATS, aqiCategory, rampCss, units, store, fmtTemp, fmtSpeedKmh, compass,
   fmtLatLon, latLonToVec3, vec3ToLatLon, subsolarPoint, fmtValid, fmtRelHours, fmtAgo, tempUnit, speedUnit, el, clamp,
 } from './util.js';
 
@@ -136,9 +136,13 @@ function applyTier(name) {
 if (settings.quality !== 'auto') quality.setManual(settings.quality);
 
 // ------------------------------------------------------------------ app state
-const layers = { temp: true, wind: !!wind, cyclones: false };
-const data = new WeatherData();
+const layers = { temp: true, aq: false, wind: !!wind, cyclones: false };
+let meta = null;
+let runBase = null;               // Date that slider hour 0 refers to (the GFS run)
+const data = new GridLayer();     // GFS temperature + wind
+const aq = new GridLayer();       // air quality (loaded only when the layer is switched on)
 const frame = { ready: false, a: 0, b: 0, f: 0 };
+const aqFrame = { ready: false, a: 0, b: 0, f: 0 };
 let hour = 0;
 let playing = false;
 const PLAY_RATE = 3; // forecast hours per second
@@ -159,7 +163,7 @@ scene.add(cyclones.group);
 
 // ------------------------------------------------------------------ frame / time
 const sunLL = { lat: 0, lon: 0 };
-function validDate(h) { return data.run ? new Date(data.run.getTime() + h * 3600e3) : new Date(); }
+function validDate(h) { return runBase ? new Date(runBase.getTime() + h * 3600e3) : new Date(); }
 function updateFrame() {
   const u = earth.uniforms;
   if (data.ok) {
@@ -175,6 +179,15 @@ function updateFrame() {
       }
     }
     u.hasData.value = frame.ready ? 1 : 0;
+  }
+  if (aq.ok && layers.aq) {
+    aq.frame(hour, aqFrame);
+    if (aqFrame.ready) {
+      u.aqA.value = aq.steps[aqFrame.a].tex;
+      u.aqB.value = aq.steps[aqFrame.b].tex;
+      u.aqMix.value = aqFrame.f;
+    }
+    u.hasAq.value = aqFrame.ready ? 1 : 0;
   }
   subsolarPoint(validDate(hour), sunLL);
   latLonToVec3(sunLL.lat, sunLL.lon, 1, u.sunDir.value);
@@ -199,13 +212,9 @@ function updateTimeLabel() {
 function setHour(h, fromSlider) {
   hour = clamp(h, 0, data.maxHour);
   if (!fromSlider) $('time-slider').value = String(hour);
-  // make sure the bracketing steps are loading
-  if (data.ok) {
-    data.frame(hour, frame);
-    const st = data.steps;
-    let i = 0; while (i < st.length - 2 && st[i + 1].hour <= hour) i++;
-    if (!st[i].tex || !st[Math.min(i + 1, st.length - 1)].tex) data.request([i, Math.min(i + 1, st.length - 1)]);
-  }
+  // make sure the bracketing steps are loading (air quality only while its layer is on)
+  data.ensure(hour);
+  if (layers.aq) aq.ensure(hour);
   updateFrame();
   updateTimeLabel();
   updateReadout();
@@ -273,7 +282,8 @@ const ndc = new THREE.Vector2();
 const unitSphere = new THREE.Sphere(new THREE.Vector3(), 1);
 const hitPoint = new THREE.Vector3();
 const hitLL = { lat: 0, lon: 0 };
-const sampleOut = { t: 0, u: 0, v: 0 };
+const sampleOut = { t2m: 0, u10: 0, v10: 0 };
+const aqOut = { aqi: 0, pm25: 0, pm10: 0 };
 const hover = { x: -1, y: -1 };
 const readout = $('readout');
 let readoutTimer = 0;
@@ -289,11 +299,18 @@ function pick(x, y) {
 function readoutText(ll) {
   const s = data.ok ? data.sample(ll.lat, ll.lon, frame, sampleOut) : null;
   const parts = [];
+  if (layers.aq && aq.ok) {
+    const a = aq.sample(ll.lat, ll.lon, aqFrame, aqOut);
+    if (a) {
+      const cat = aqiCategory(a.aqi);
+      parts.push(`<span class="ro-dot" style="background:${cat.color}"></span><b>AQI ${Math.round(a.aqi)}</b> ${cat.short || cat.name} · PM2.5 ${Math.round(a.pm25)} µg/m³`);
+    }
+  }
   if (s) {
-    if (layers.temp || !layers.wind) parts.push(`<b>${fmtTemp(s.t, 1)}</b>`);
-    const spd = Math.hypot(s.u, s.v);
-    const from = (Math.atan2(-s.u, -s.v) * 180 / Math.PI + 360) % 360;
-    if (layers.wind || !layers.temp) parts.push(`${fmtSpeedKmh(spd * 3.6)} from ${compass(from)}`);
+    if (layers.temp || (!layers.wind && !layers.aq)) parts.push(`<b>${fmtTemp(s.t2m, 1)}</b>`);
+    const spd = Math.hypot(s.u10, s.v10);
+    const from = (Math.atan2(-s.u10, -s.v10) * 180 / Math.PI + 360) % 360;
+    if (layers.wind || (!layers.temp && !layers.aq)) parts.push(`${fmtSpeedKmh(spd * 3.6)} from ${compass(from)}`);
   }
   return `${parts.join(' · ') || 'No model data'}<div class="ro-coord">${fmtLatLon(ll.lat, ll.lon)}</div>`;
 }
@@ -341,8 +358,10 @@ function openPlace(place, dist) {
   selected = place;
   latLonToVec3(place.lat, place.lon, 1, pinPos);
   controls.flyTo(place.lat, place.lon, dist ?? Math.min(controls.dist, 2.4));
-  const s = data.ok ? data.sample(place.lat, place.lon, frame, { t: 0, u: 0, v: 0 }) : null;
-  panel.show({ ...place }, s, fmtValid(validDate(hour)));
+  const s = data.ok ? data.sample(place.lat, place.lon, frame, {}) : null;
+  if (aq.ok && !layers.aq) aq.frame(hour, aqFrame); // model AQI for the panel even if the layer is off
+  const a = aq.ok ? aq.sample(place.lat, place.lon, aqFrame, {}) : null;
+  panel.show({ ...place }, s, fmtValid(validDate(hour)), a);
   openSheet('place');
   updatePin();
   invalidate();
@@ -389,17 +408,25 @@ document.querySelector('.tabs').addEventListener('keydown', (e) => {
 // streaks are drawn in a fixed-resolution map texture: soften them as we zoom in so they don't look chunky
 function updateWindOpacity() {
   if (!wind) return;
-  const base = layers.temp ? 0.55 : 0.95;
+  const base = (layers.temp || layers.aq) ? 0.55 : 0.95;
   wind.lineMat.uniforms.opacity.value = base * clamp((controls.dist - 1) / 1.3, 0.45, 1);
 }
 function setLayer(name, on) {
+  // temperature and air quality both colour the whole globe, so only one of them is shown at a time
+  const rival = { temp: 'aq', aq: 'temp' }[name];
+  if (on && rival && layers[rival]) {
+    layers[rival] = false;
+    document.querySelector(`[data-layer="${rival}"]`).setAttribute('aria-pressed', 'false');
+  }
   layers[name] = on;
   document.querySelector(`[data-layer="${name}"]`).setAttribute('aria-pressed', String(on));
   const u = earth.uniforms;
   u.tempOn.value = layers.temp ? 1 : 0;
+  u.aqOn.value = layers.aq ? 1 : 0;
   u.windOn.value = layers.wind ? 1 : 0;
+  if (name === 'aq' && on && aq.ok) { aq.ensure(hour); aq.prefetchAll(aq.bracket(hour)[0]); updateFrame(); }
   if (wind) {
-    wind.lineMat.uniforms.colorMode.value = layers.temp ? 0 : 1;
+    wind.lineMat.uniforms.colorMode.value = (layers.temp || layers.aq) ? 0 : 1;
     updateWindOpacity();
     if (name === 'wind' && on) wind.clearTrails();
   }
@@ -412,6 +439,11 @@ function setLayer(name, on) {
   renderLegend();
   updateReadout();
   invalidate();
+}
+function disableLayer(name, reason) {
+  const b = document.querySelector(`[data-layer="${name}"]`);
+  b.disabled = true; b.setAttribute('aria-pressed', 'false'); b.title = reason;
+  layers[name] = false;
 }
 for (const b of document.querySelectorAll('.layer-btn')) {
   b.addEventListener('click', () => setLayer(b.dataset.layer, b.getAttribute('aria-pressed') !== 'true'));
@@ -435,8 +467,15 @@ function renderLegend() {
       el('div', { class: 'lg-bar', style: `background:${rampCss(TEMP_RAMP)}` }),
       el('div', { class: 'lg-ticks' }, ...ticks.map((t) => el('span', { text: String(Math.round(imperial ? t * 9 / 5 + 32 : t)) })))));
   }
+  if (layers.aq && aq.ok) {
+    L.append(el('div', { class: 'lg lg-aq' },
+      el('span', { class: 'lg-title', text: 'Air quality (US AQI)' }),
+      el('div', { class: 'lg-bar lg-steps' }, ...AQI_CATS.map((c) => el('span', { style: `background:${c.color}`, title: `${c.name}: ${c.advice}` }))),
+      el('div', { class: 'lg-ticks' }, ...['0', '50', '100', '150', '200', '300', '500'].map((t) => el('span', { text: t }))),
+      el('div', { class: 'lg-ticks lg-names' }, ...AQI_CATS.map((c) => el('span', { text: c.short || c.name })))));
+  }
   if (layers.wind && wind && data.ok) {
-    if (layers.temp) {
+    if (layers.temp || layers.aq) {
       L.append(el('div', { class: 'lg' }, el('span', { class: 'lg-title', text: 'Wind' }),
         el('span', { class: 'lg-note', text: 'white streaks follow the flow; longer = faster' })));
     } else {
@@ -461,7 +500,7 @@ function setPlaying(p) {
   playing = p && data.ok;
   $('timebar').classList.toggle('playing', playing);
   $('play-btn').setAttribute('aria-label', playing ? 'Pause forecast animation' : 'Play forecast animation');
-  if (playing) data.prefetchAll(0);
+  if (playing) { data.prefetchAll(0); if (layers.aq) aq.prefetchAll(0); }
   invalidate();
 }
 $('play-btn').addEventListener('click', () => setPlaying(!playing));
@@ -538,7 +577,7 @@ initSearch($('search-input'), $('search-results'), (place) => openPlace(place, 1
 function updateUpdated() {
   const parts = [];
   if (data.run) parts.push(`GFS run ${data.run.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC`);
-  if (data.meta?.generated) parts.push(`data updated ${fmtAgo(new Date(data.meta.generated))}`);
+  if (meta?.generated) parts.push(`data updated ${fmtAgo(new Date(meta.generated))}`);
   $('updated').textContent = parts.join(' · ');
 }
 setInterval(() => { updateUpdated(); updateTimeLabel(); }, 60000);
@@ -551,7 +590,7 @@ async function boot() {
 
   let metaOk = false;
   try {
-    await data.loadMeta();
+    meta = await loadMeta();
     metaOk = true;
   } catch (e) {
     setProblem('meta', `Weather data could not be loaded (${e.message}). The globe still works; layers are unavailable.`);
@@ -559,15 +598,25 @@ async function boot() {
   progress('Loading forecast…');
 
   if (metaOk) {
-    const g = data.meta.gfs;
+    const g = meta.gfs, q = meta.aq;
+    runBase = g?.run ? new Date(g.run) : q?.run ? new Date(q.run) : new Date();
+    data.configure(g, runBase);
+    aq.configure(q, runBase);
     if (g?.status === 'error' || !data.ok) setProblem('gfs', g?.message || 'No forecast data available.');
     else if (g.status === 'stale') setProblem('gfs', g.message);
+    if (!aq.ok) disableLayer('aq', q?.message || 'Air-quality data is unavailable right now.');
+    else if (q.status === 'stale') setProblem('aq', q.message);
+    aq.onLoad((i, s) => {
+      if (s.error) setProblem('aqstep', `Some air-quality hours failed to load (${s.error.message}).`);
+      updateFrame();
+      updateReadout();
+    });
     if (data.ok) {
       earth.uniforms.tRange.value.set(data.enc.r.min, data.enc.r.max);
       if (wind) wind.shared.wRange.value.set(data.enc.g.min, data.enc.g.max);
       slider.max = String(data.maxHour);
       buildLoadSegments();
-      const nowH = (Date.now() - data.run.getTime()) / 3600e3;
+      const nowH = (Date.now() - runBase.getTime()) / 3600e3;
       hour = clamp(nowH, 0, data.maxHour);
       slider.value = String(hour);
       const tick = $('now-tick');
@@ -584,12 +633,12 @@ async function boot() {
       if (first.every((x) => !x)) setProblem('gfs', 'Forecast images could not be downloaded.');
       data.prefetchAll(i);
     } else { progress(); progress(); }
-    if (data.meta.cyclones?.status === 'ok') await cyclones.load();
-    else cyclones.setError(data.meta.cyclones?.message || 'Cyclone data missing.');
+    if (meta.cyclones?.status === 'ok') await cyclones.load();
+    else cyclones.setError(meta.cyclones?.message || 'Cyclone data missing.');
   } else {
     progress(); progress();
     cyclones.setError('Weather data index could not be loaded.');
-    for (const n of ['temp', 'wind']) { const b = document.querySelector(`[data-layer="${n}"]`); b.disabled = true; b.setAttribute('aria-pressed', 'false'); layers[n] = false; }
+    for (const n of ['temp', 'wind', 'aq']) disableLayer(n, 'Data unavailable');
   }
   progress('Almost there…');
   if (data.ok === false) { layers.temp = false; layers.wind = false; }

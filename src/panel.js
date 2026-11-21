@@ -1,7 +1,8 @@
 // Local weather panel: Open-Meteo current conditions + 48 h chart, Nominatim reverse geocoding.
-import { el, fmtTemp, fmtSpeedKmh, fmtLatLon, compass, WMO, tempValue, tempUnit } from './util.js';
+import { el, fmtTemp, fmtSpeedKmh, fmtLatLon, compass, WMO, tempValue, tempUnit, aqiCategory } from './util.js';
 
 const OM = 'https://api.open-meteo.com/v1/forecast';
+const OM_AQ = 'https://air-quality-api.open-meteo.com/v1/air-quality';
 const NOMINATIM = 'https://nominatim.openstreetmap.org/reverse';
 let lastNominatim = 0;
 let ctrl = null;
@@ -25,12 +26,19 @@ async function reverseName(lat, lon, signal) {
 export class PlacePanel {
   constructor(root) { this.root = root; this.last = null; }
 
-  /** place: {lat, lon, name?, sub?}; modelSample: {t,u,v} from GFS at current slider time, or null */
-  async show(place, modelSample, modelTimeLabel) {
+  /** place: {lat, lon, name?, sub?}; modelSample: {t2m,u10,v10} from GFS at the slider time (or null);
+   *  modelAq: {aqi,pm25,pm10} from the air-quality layer at the slider time (or null) */
+  async show(place, modelSample, modelTimeLabel, modelAq) {
     ctrl?.abort();
     ctrl = new AbortController();
     const { signal } = ctrl;
-    this.last = { place, modelSample, modelTimeLabel };
+    this.last = { place, modelSample, modelTimeLabel, modelAq };
+    // air quality is a separate free API call; it fails independently of the weather forecast
+    const aqPromise = fetch(`${OM_AQ}?latitude=${place.lat.toFixed(3)}&longitude=${place.lon.toFixed(3)}` +
+      '&current=us_aqi,european_aqi,pm2_5,pm10,ozone,nitrogen_dioxide,sulphur_dioxide,carbon_monoxide' +
+      '&hourly=us_aqi&forecast_hours=24&timezone=auto', { signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
+    aqPromise.catch(() => {}); // handled in render
     const r = this.root;
     r.replaceChildren();
     const title = el('h2', { class: 'place-title', text: place.name || 'Locating…' });
@@ -56,14 +64,45 @@ export class PlacePanel {
       if (signal.aborted) return;
       this.data = d;
       this._render(body, d, modelSample, modelTimeLabel);
+      const aqBox = el('div', { class: 'aq-box' }, el('div', { class: 'skeleton', style: 'width:60%' }));
+      body.insertBefore(aqBox, body.children[2] || null);
+      aqPromise.then((a) => { if (!signal.aborted) this._renderAq(aqBox, a, modelAq); },
+        (e) => {
+          if (signal.aborted || e.name === 'AbortError') return;
+          aqBox.replaceChildren(el('p', { class: 'err', text: 'Air-quality data couldn’t be loaded for this place.' }), el('p', { class: 'note', text: e.message }));
+        });
     } catch (e) {
       if (e.name === 'AbortError') return;
       body.replaceChildren(el('p', { class: 'err', text: 'Couldn’t load the local forecast.' }), el('p', { class: 'note', text: e.message }),
-        el('button', { class: 'link-btn', text: 'Try again', onclick: () => this.show(place, modelSample, modelTimeLabel) }));
+        el('button', { class: 'link-btn', text: 'Try again', onclick: () => this.show(place, modelSample, modelTimeLabel, modelAq) }));
     }
   }
 
-  rerender() { if (this.last && this.data) this.show(this.last.place, this.last.modelSample, this.last.modelTimeLabel); }
+  rerender() { if (this.last && this.data) this.show(this.last.place, this.last.modelSample, this.last.modelTimeLabel, this.last.modelAq); }
+
+  _renderAq(box, a, model) {
+    const c = a.current || {};
+    if (c.us_aqi == null) {
+      box.replaceChildren(el('p', { class: 'note', text: 'No air-quality estimate is available for this point.' }));
+      return;
+    }
+    const cat = aqiCategory(c.us_aqi);
+    const peak = Math.max(...(a.hourly?.us_aqi || []).filter((v) => v != null));
+    const fmt = (v, unit = 'µg/m³') => (v == null ? '—' : `${Math.round(v)} ${unit}`);
+    const stat = (k, v) => el('div', {}, el('dt', { text: k }), el('dd', { text: v }));
+    box.replaceChildren(
+      el('div', { class: 'aq-head' },
+        el('div', { class: 'aq-score', text: String(Math.round(c.us_aqi)), title: 'US AQI' }),
+        el('div', {},
+          el('span', { class: 'aq-chip', style: `background:${cat.color}`, text: cat.name }),
+          el('div', { class: 'note', style: 'margin-top:4px', text: `US AQI now${Number.isFinite(peak) ? ` · next 24 h peak ${Math.round(peak)}` : ''}` }))),
+      el('p', { class: 'aq-advice', text: cat.advice }),
+      el('dl', { class: 'aq-grid' },
+        stat('PM2.5', fmt(c.pm2_5)), stat('PM10', fmt(c.pm10)), stat('Ozone', fmt(c.ozone)),
+        stat('NO₂', fmt(c.nitrogen_dioxide)), stat('SO₂', fmt(c.sulphur_dioxide)), stat('European AQI', c.european_aqi == null ? '—' : String(Math.round(c.european_aqi)))),
+      el('p', { class: 'note', text: `Air quality: CAMS forecast via Open-Meteo.${model ? ` Map layer (NOAA GEFS) here: AQI ${Math.round(model.aqi)}.` : ''} Model estimates, not station measurements.` }),
+    );
+  }
 
   _render(body, d, model, modelLabel) {
     const c = d.current;
@@ -80,7 +119,7 @@ export class PlacePanel {
         stat('Precip', `${c.precipitation} mm`),
         stat('Pressure', `${Math.round(c.pressure_msl)} hPa`)),
       this._charts(d),
-      model ? el('p', { class: 'note', text: `Globe layer (GFS 1°) here at ${modelLabel}: ${fmtTemp(model.t, 1)}, wind ${fmtSpeedKmh(Math.hypot(model.u, model.v) * 3.6)}.` }) : null,
+      model ? el('p', { class: 'note', text: `Globe layer (GFS 1°) here at ${modelLabel}: ${fmtTemp(model.t2m, 1)}, wind ${fmtSpeedKmh(Math.hypot(model.u10, model.v10) * 3.6)}.` }) : null,
       el('p', { class: 'note', text: `Local forecast by Open-Meteo.com (CC BY 4.0) · times in ${d.timezone_abbreviation || d.timezone}` }),
     );
   }

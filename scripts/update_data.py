@@ -5,14 +5,20 @@ Outputs (in public/data/):
   gfs_fXXX.png         one RGB image per forecast hour:
                          R = 2 m temperature, G = 10 m wind U, B = 10 m wind V
                          (8-bit, linearly scaled using ranges in meta.json)
+  aq_fXXX.png          one RGB image per forecast hour (0.5 deg grid):
+                         R = US AQI (0-500, linear), G = PM2.5, B = PM10 (sqrt-scaled, see meta.json)
   cyclones.geojson     active (and recently ended) tropical cyclones from GDACS
 
 Sources:
   NOAA GFS 1.0 deg via the NOAA Open Data Dissemination program on AWS
     (https://registry.opendata.aws/noaa-gfs-bdp-pds/), falling back to NOMADS.
+  NOAA GEFS-Aerosols 0.25 deg surface PM2.5 / PM10, same program
+    (https://registry.opendata.aws/noaa-gefs/).
   GDACS tropical cyclone API (https://www.gdacs.org).
 
-Usage:  python scripts/update_data.py [--hours 72] [--step 6]
+Usage:  python scripts/update_data.py [--hours 72] [--step 6] [--skip-if-current SITE_URL]
+  --skip-if-current: exit early (and tell GitHub Actions to skip the build) when the live site
+                     already has the newest model runs and was refreshed less than 3 hours ago.
 Only needs numpy and pillow (no compiled GRIB library).
 """
 import argparse
@@ -37,7 +43,14 @@ OUT = os.path.join(ROOT, "public", "data")
 UA = {"User-Agent": "weather-globe-data-pipeline/1.0 (open-source educational project)"}
 AWS = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
 NOMADS = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_1p00.pl"
+AWS_GEFS = "https://noaa-gefs-pds.s3.amazonaws.com"
 GDACS_LIST = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=TC"
+REFRESH_HOURS = 3  # cyclones / everything re-published at least this often, even without a new model run
+
+# US EPA AQI breakpoints (PM2.5 per the 2024 revision). (concentration µg/m³, AQI)
+AQI_PM25 = ([0.0, 9.0, 35.4, 55.4, 125.4, 225.4, 325.4], [0, 50, 100, 150, 200, 300, 500])
+AQI_PM10 = ([0.0, 54.0, 154.0, 254.0, 354.0, 424.0, 604.0], [0, 50, 100, 150, 200, 300, 500])
+PM25_MAX, PM10_MAX = 1000.0, 2000.0  # sqrt-encoding ceilings for the PNG channels
 RECENT_DAYS = 14
 
 WANTED = {  # (category, parameter, level) -> key
@@ -176,6 +189,122 @@ def build_gfs(hours, step, staging):
     }
 
 
+# ----------------------------------------------------------------- Air quality (GEFS-Aerosols)
+def chem_url(run, fh):
+    d, h = run.strftime("%Y%m%d"), run.strftime("%H")
+    return f"{AWS_GEFS}/gefs.{d}/{h}/chem/pgrb2ap25/gefs.chem.t{h}z.a2d_0p25.f{fh:03d}.grib2"
+
+
+def find_chem_run(valid_times):
+    """Newest GEFS-Aerosols run whose forecast covers every wanted valid time (max lead 120 h)."""
+    last = max(valid_times)
+    now = dt.datetime.now(dt.timezone.utc)
+    base = now.replace(minute=0, second=0, microsecond=0, hour=(now.hour // 6) * 6)
+    for back in range(0, 8):
+        run = base - dt.timedelta(hours=6 * back)
+        if run > min(valid_times):
+            continue  # would not cover the first wanted time
+        need = int((last - run).total_seconds() // 3600)
+        if need > 120:
+            break
+        if exists(chem_url(run, need) + ".idx"):
+            return run
+        log(f"  aerosol run {run:%Y-%m-%d %H}z not complete yet")
+    raise RuntimeError("No complete GEFS-Aerosols run covers the forecast period")
+
+
+def fetch_pm(run, fh):
+    """Return (pm25, pm10) surface concentration in µg/m³ on the 0.25° grid, with natural
+    sea-salt spray removed (the model's fine sea salt otherwise paints the open oceans 'Moderate')."""
+    base = chem_url(run, fh)
+    lines = http(base + ".idx").decode().strip().splitlines()
+    starts = [int(l.split(":")[1]) for l in lines]
+    out = {}
+    for i, l in enumerate(lines):
+        if ":surface:" in l:
+            if "aerosol=Total aerosol" in l:
+                key = "pm25" if ":PMTF:" in l else "pm10" if ":PMTC:" in l else None
+            elif "aerosol=Sea salt" in l and ":PMTF:" in l:
+                key = "salt25"
+            else:
+                key = None
+            if not key:
+                continue
+            end = starts[i + 1] - 1 if i + 1 < len(lines) else ""
+            msg = next(decode_messages(http(base, headers={"Range": f"bytes={starts[i]}-{end}"})))
+            if msg["scan"] != 0 or abs(msg["lat1"] - 90) > 1e-6:
+                raise RuntimeError("unexpected aerosol grid orientation")
+            out[key] = msg["values"].astype(np.float32)
+    if set(out) != {"pm25", "pm10", "salt25"}:
+        raise RuntimeError(f"aerosol file missing PM fields (found {sorted(out)})")
+    salt = out["salt25"]
+    return np.clip(out["pm25"] - salt, 0, None), np.clip(out["pm10"] - salt, 0, None)
+
+
+def us_aqi(pm25, pm10):
+    a = np.interp(np.clip(pm25, 0, None), *AQI_PM25)
+    b = np.interp(np.clip(pm10, 0, None), *AQI_PM10)
+    return np.maximum(a, b)  # values above the top breakpoint clamp to 500
+
+
+def build_aq(valid_times, staging):
+    run = find_chem_run(valid_times)
+    log(f"GEFS-Aerosols run: {run:%Y-%m-%d %H}z")
+    steps = []
+    for v in valid_times:
+        fh = int((v - run).total_seconds() // 3600)
+        pm25, pm10 = fetch_pm(run, fh)
+        # 0.25° -> 0.5°: 2x2 block mean (keeps city plumes better than subsampling)
+        def half(a):
+            core = a[:720, :1440].reshape(360, 2, 720, 2).mean(axis=(1, 3))
+            return np.vstack([core, a[720:721, ::2]])  # 361 rows incl. south pole
+        pm25, pm10 = half(pm25), half(pm10)
+        aqi = us_aqi(pm25, pm10)
+        rgb = np.dstack([
+            np.rint(np.clip(aqi, 0, 500) / 500 * 255),
+            np.rint(np.sqrt(np.clip(pm25, 0, PM25_MAX) / PM25_MAX) * 255),
+            np.rint(np.sqrt(np.clip(pm10, 0, PM10_MAX) / PM10_MAX) * 255),
+        ]).astype(np.uint8)
+        name = f"aq_f{fh:03d}.png"
+        Image.fromarray(rgb, "RGB").save(os.path.join(staging, name), optimize=True)
+        steps.append({"valid": v.strftime("%Y-%m-%dT%H:%MZ"), "file": name})
+        log(f"  f{fh:03d} ok  AQI max {aqi.max():.0f}  PM2.5 max {pm25.max():.0f}")
+    return {
+        "status": "ok",
+        "model": "NOAA GEFS-Aerosols (0.25°, shown at 0.5°)",
+        "run": run.strftime("%Y-%m-%dT%H:%MZ"),
+        "index": "US AQI (EPA 2024 breakpoints) from surface PM2.5 and PM10, natural sea-salt spray excluded",
+        "grid": {"nx": 720, "ny": 361, "lat0": 90, "lon0": 0, "dlat": -0.5, "dlon": 0.5},
+        "encoding": {
+            "r": {"var": "aqi", "unit": "", "min": 0, "max": 500},
+            "g": {"var": "pm25", "unit": "µg/m³", "scale": "sqrt", "min": 0, "max": PM25_MAX},
+            "b": {"var": "pm10", "unit": "µg/m³", "scale": "sqrt", "min": 0, "max": PM10_MAX},
+        },
+        "steps": steps,
+    }
+
+
+# ----------------------------------------------------------------- freshness check
+def live_is_current(site, hours):
+    """True if the published site already has the newest model runs and was refreshed recently."""
+    try:
+        live = json.loads(http(site.rstrip("/") + "/data/meta.json", retries=2))
+    except Exception as e:
+        log(f"live meta unavailable ({e}); full update")
+        return False
+    try:
+        gen = dt.datetime.strptime(live["generated"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=dt.timezone.utc)
+        age_h = (dt.datetime.now(dt.timezone.utc) - gen).total_seconds() / 3600
+        latest = find_latest_run(hours).strftime("%Y-%m-%dT%H:%MZ")
+    except Exception as e:
+        log(f"freshness check failed ({e}); full update")
+        return False
+    same_run = live.get("gfs", {}).get("run") == latest and live["gfs"].get("status") == "ok"
+    aq_ok = live.get("aq", {}).get("status") == "ok"
+    log(f"live GFS run {live.get('gfs', {}).get('run')}, newest {latest}; site refreshed {age_h:.1f} h ago")
+    return same_run and aq_ok and age_h < REFRESH_HOURS
+
+
 # ----------------------------------------------------------------- Cyclones
 def saffir_simpson(kmh):
     if kmh is None:
@@ -293,7 +422,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=int, default=72)
     ap.add_argument("--step", type=int, default=6)
+    ap.add_argument("--skip-if-current", metavar="SITE_URL", default=None)
     args = ap.parse_args()
+
+    if args.skip_if_current and live_is_current(args.skip_if_current, args.hours):
+        log("Live site is already up to date; nothing to do.")
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+                fh.write("skip=true\n")
+        return 0
 
     os.makedirs(OUT, exist_ok=True)
     meta_path = os.path.join(OUT, "meta.json")
@@ -307,30 +444,46 @@ def main():
     meta = {"generated": now.strftime("%Y-%m-%dT%H:%MZ")}
     failures = 0
 
-    staging = os.path.join(OUT, "_staging")
-    shutil.rmtree(staging, ignore_errors=True)
-    os.makedirs(staging)
-    log("== GFS temperature and wind")
-    try:
-        gfs = build_gfs(args.hours, args.step, staging)
-        for f in os.listdir(OUT):
-            if f.startswith("gfs_f") and f.endswith(".png"):
-                os.remove(os.path.join(OUT, f))
+    def layer(key, prefix, label, build):
+        """Build one gridded layer into a staging folder; on failure keep the previous files if any."""
+        nonlocal failures
+        staging = os.path.join(OUT, f"_staging_{key}")
+        shutil.rmtree(staging, ignore_errors=True)
+        os.makedirs(staging, exist_ok=True)  # OneDrive can briefly keep a just-deleted folder
         for f in os.listdir(staging):
-            shutil.move(os.path.join(staging, f), os.path.join(OUT, f))
-        meta["gfs"] = gfs
-    except Exception as e:
-        failures += 1
-        log(f"GFS FAILED: {e}")
-        prev = old.get("gfs") if old.get("gfs", {}).get("steps") else None
-        if prev:
-            prev = dict(prev)
-            prev["status"] = "stale"
-            prev["message"] = f"Latest update failed ({e}); showing previous run."
-            meta["gfs"] = prev
-        else:
-            meta["gfs"] = {"status": "error", "message": f"Could not download GFS data: {e}", "steps": []}
-    shutil.rmtree(staging, ignore_errors=True)
+            os.remove(os.path.join(staging, f))
+        try:
+            result = build(staging)
+            for f in os.listdir(OUT):
+                if f.startswith(prefix) and f.endswith(".png"):
+                    os.remove(os.path.join(OUT, f))
+            for f in os.listdir(staging):
+                shutil.move(os.path.join(staging, f), os.path.join(OUT, f))
+            meta[key] = result
+        except Exception as e:
+            failures += 1
+            log(f"{label} FAILED: {e}")
+            prev = old.get(key) if old.get(key, {}).get("steps") else None
+            if prev:
+                prev = dict(prev)
+                prev["status"] = "stale"
+                prev["message"] = f"Latest {label} update failed ({e}); showing the previous run."
+                meta[key] = prev
+            else:
+                meta[key] = {"status": "error", "message": f"Could not download {label} data: {e}", "steps": []}
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    log("== GFS temperature and wind")
+    layer("gfs", "gfs_f", "weather", lambda st: build_gfs(args.hours, args.step, st))
+
+    log("== GEFS-Aerosols air quality")
+    if meta["gfs"].get("steps"):
+        valid = [dt.datetime.strptime(s["valid"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=dt.timezone.utc) for s in meta["gfs"]["steps"]]
+    else:
+        start = now.replace(minute=0, second=0, microsecond=0, hour=(now.hour // 6) * 6) - dt.timedelta(hours=6)
+        valid = [start + dt.timedelta(hours=h) for h in range(0, args.hours + 1, args.step)]
+    layer("aq", "aq_f", "air quality", lambda st: build_aq(valid, st))
 
     log("== GDACS tropical cyclones")
     try:
@@ -351,7 +504,7 @@ def main():
     total = sum(os.path.getsize(os.path.join(OUT, f)) for f in os.listdir(OUT))
     log(f"== done: {len(os.listdir(OUT))} files, {total/1024:.0f} KB, {failures} source(s) failed")
     # exit non-zero only if everything failed, so the site still deploys with partial data
-    return 1 if failures == 2 else 0
+    return 1 if failures == 3 else 0
 
 
 if __name__ == "__main__":
