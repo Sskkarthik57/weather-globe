@@ -100,7 +100,9 @@ export class PlacePanel {
       el('dl', { class: 'aq-grid' },
         stat('PM2.5', fmt(c.pm2_5)), stat('PM10', fmt(c.pm10)), stat('Ozone', fmt(c.ozone)),
         stat('NO₂', fmt(c.nitrogen_dioxide)), stat('SO₂', fmt(c.sulphur_dioxide)), stat('European AQI', c.european_aqi == null ? '—' : String(Math.round(c.european_aqi)))),
-      el('p', { class: 'note', text: `Air quality: CAMS forecast via Open-Meteo.${model ? ` Map layer (NOAA GEFS) here: AQI ${Math.round(model.aqi)}.` : ''} Model estimates, not station measurements.` }),
+      el('p', { class: 'note', text: `Air quality: CAMS forecast via Open-Meteo (counts PM2.5, PM10, ozone, NO₂, SO₂ and CO).` +
+        `${model ? ` Map layer (NOAA GEFS-Aerosols 0.25°, PM2.5 and PM10 only) here: AQI ${Math.round(model.aqi)}, PM2.5 ${Math.round(model.pm25)} µg/m³.` : ''}` +
+        ' Model estimates, not station measurements.' }),
     );
   }
 
@@ -119,7 +121,8 @@ export class PlacePanel {
         stat('Precip', `${c.precipitation} mm`),
         stat('Pressure', `${Math.round(c.pressure_msl)} hPa`)),
       this._charts(d),
-      model ? el('p', { class: 'note', text: `Globe layer (GFS 1°) here at ${modelLabel}: ${fmtTemp(model.t2m, 1)}, wind ${fmtSpeedKmh(Math.hypot(model.u10, model.v10) * 3.6)}.` }) : null,
+      model ? el('p', { class: 'note', text: `Globe map (GFS 0.25°) here at ${modelLabel}: ${fmtTemp(model.t2m, 1)}` +
+        `${model.u10 != null ? `, wind ${fmtSpeedKmh(Math.hypot(model.u10, model.v10) * 3.6)}` : ''}.` }) : null,
       el('p', { class: 'note', text: `Local forecast by Open-Meteo.com (CC BY 4.0) · times in ${d.timezone_abbreviation || d.timezone}` }),
     );
   }

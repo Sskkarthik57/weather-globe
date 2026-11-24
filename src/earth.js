@@ -21,25 +21,28 @@ vec2 gridUv(vec2 suv, vec2 size) {
   return vec2(lon / 360.0 + 0.5 / size.x, ((90.0 - lat) / 180.0 * (size.y - 1.0) + 0.5) / size.y);
 }`;
 
-// Smooth B-spline bicubic sampling using 4 bilinear taps (removes the 1° grid look when zoomed in)
-const BICUBIC_GLSL = /* glsl */`
-vec4 cubicW(float v) {
-  vec4 n = vec4(1.0, 2.0, 3.0, 4.0) - v;
-  vec4 s = n * n * n;
-  float x = s.x, y = s.y - 4.0 * s.x, z = s.z - 4.0 * s.y + 6.0 * s.x;
-  return vec4(x, y, z, 6.0 - x - y - z) / 6.0;
-}
-vec3 texBicubic(sampler2D t, vec2 uv) {
+// Catmull-Rom bicubic sampling in 9 bilinear taps. Unlike a B-spline it is interpolating: the map shows
+// exactly the model's value at every grid point (hot and cold peaks are not smoothed away), and it matches
+// GridLayer.sample() in data.js, so the hover / click readout agrees with the colours.
+// dataCubic = 0 falls back to a single bilinear tap (cheaper, used on the low quality tier).
+const CATMULL_GLSL = /* glsl */`
+uniform float dataCubic;
+vec4 texCatmull(sampler2D t, vec2 uv) {
+  vec4 r = texture(t, uv);
+  if (dataCubic < 0.5) return r;
   vec2 size = vec2(textureSize(t, 0));
-  uv = uv * size - 0.5;
-  vec2 f = fract(uv); uv -= f;
-  vec4 xc = cubicW(f.x), yc = cubicW(f.y);
-  vec4 c = uv.xxyy + vec2(-0.5, 1.5).xyxy;
-  vec4 s = vec4(xc.xz + xc.yw, yc.xz + yc.yw);
-  vec4 o = (c + vec4(xc.yw, yc.yw) / s) / size.xxyy;
-  vec3 s0 = texture(t, o.xz).rgb, s1 = texture(t, o.yz).rgb, s2 = texture(t, o.xw).rgb, s3 = texture(t, o.yw).rgb;
-  float sx = s.x / (s.x + s.y), sy = s.z / (s.z + s.w);
-  return mix(mix(s3, s2, sx), mix(s1, s0, sx), sy);
+  vec2 sp = uv * size;
+  vec2 p1 = floor(sp - 0.5) + 0.5;
+  vec2 f = sp - p1;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 t0 = (p1 - 1.0) / size, t3 = (p1 + 2.0) / size, t12 = (p1 + w2 / w12) / size;
+  return texture(t, vec2(t0.x, t0.y)) * w0.x * w0.y + texture(t, vec2(t12.x, t0.y)) * w12.x * w0.y + texture(t, vec2(t3.x, t0.y)) * w3.x * w0.y
+       + texture(t, vec2(t0.x, t12.y)) * w0.x * w12.y + texture(t, vec2(t12.x, t12.y)) * w12.x * w12.y + texture(t, vec2(t3.x, t12.y)) * w3.x * w12.y
+       + texture(t, vec2(t0.x, t3.y)) * w0.x * w3.y + texture(t, vec2(t12.x, t3.y)) * w12.x * w3.y + texture(t, vec2(t3.x, t3.y)) * w3.x * w3.y;
 }`;
 
 const EARTH_VERT = /* glsl */`
@@ -58,12 +61,12 @@ const EARTH_FRAG = /* glsl */`
 uniform sampler2D dayTex, nightTex, waterTex, dataA, dataB, rampTex, trailTex, aqA, aqB, aqRamp;
 uniform vec3 sunDir;
 uniform float dataMix, tempOn, tempOpacity, windOn, atmo, hasData, aqOn, aqMix, hasAq;
-uniform vec2 tRange, rampRange;
+uniform vec2 rampRange;
 varying vec2 vUv;
 varying vec3 vN;
 varying vec3 vP;
 ${DATA_UV_GLSL}
-${BICUBIC_GLSL}
+${CATMULL_GLSL}
 void main() {
   vec3 N = normalize(vN);
   vec3 V = normalize(cameraPosition - vP);
@@ -71,13 +74,14 @@ void main() {
   float dayAmt = smoothstep(-0.10, 0.16, NdL);
   float lambert = max(NdL, 0.0);
 
-  vec3 day = texture(dayTex, vUv).rgb;
-  vec3 night = texture(nightTex, vUv).rgb;
+  vec2 iuv = vec2(vUv.x, 1.0 - vUv.y); // Earth images are uploaded as ImageBitmaps, top row first
+  vec3 day = texture(dayTex, iuv).rgb;
+  vec3 night = texture(nightTex, iuv).rgb;
   vec3 col = day * (0.035 + 1.25 * pow(lambert, 0.75));
   vec3 lights = pow(night, vec3(1.4)) * vec3(1.0, 0.78, 0.48) * 1.8;
   col += lights * (1.0 - dayAmt);
 
-  float w = texture(waterTex, vUv).r;
+  float w = texture(waterTex, iuv).r;
   if (atmo > 0.5) {
     vec3 H = normalize(sunDir + V);
     float spec = pow(max(dot(N, H), 0.0), 70.0) * w * smoothstep(0.0, 0.2, NdL);
@@ -86,7 +90,7 @@ void main() {
 
   if (aqOn > 0.5 && hasAq > 0.5) {
     vec2 auv = gridUv(vUv, vec2(textureSize(aqA, 0)));
-    float aqi = mix(texBicubic(aqA, auv).r, texBicubic(aqB, auv).r, aqMix) * 500.0;
+    float aqi = max(0.0, mix(texCatmull(aqA, auv).r, texCatmull(aqB, auv).r, aqMix));
     // AQI -> equal-width category position (0..1), matching aqiToX() in util.js
     float x = aqi <= 50.0 ? aqi / 50.0 : aqi <= 100.0 ? 1.0 + (aqi - 50.0) / 50.0 : aqi <= 150.0 ? 2.0 + (aqi - 100.0) / 50.0
             : aqi <= 200.0 ? 3.0 + (aqi - 150.0) / 50.0 : aqi <= 300.0 ? 4.0 + (aqi - 200.0) / 100.0 : 5.0 + (aqi - 300.0) / 200.0;
@@ -98,22 +102,19 @@ void main() {
     col += lights * (1.0 - dayAmt) * 0.45;
   }
 
-  if (hasData > 0.5) {
+  if (hasData > 0.5 && tempOn > 0.5) {
     vec2 duv = gridUv(vUv, vec2(textureSize(dataA, 0)));
-    if (tempOn > 0.5) {
-      float d = mix(texBicubic(dataA, duv).r, texBicubic(dataB, duv).r, dataMix);
-      float tC = mix(tRange.x, tRange.y, d);
-      float x = clamp((tC - rampRange.x) / (rampRange.y - rampRange.x), 0.0, 1.0);
-      vec3 tc = texture(rampTex, vec2(x, 0.5)).rgb;
-      float lit = mix(0.26, 1.0, dayAmt);
-      col = mix(col, tc * lit, tempOpacity);
-      col += lights * (1.0 - dayAmt) * 0.45;   // cities still glow through at night
-    }
-    if (windOn > 0.5) {
-      vec4 tr = texture(trailTex, vUv);
-      float lit = mix(0.55, 1.0, dayAmt);
-      col = col * (1.0 - tr.a) + tr.rgb * lit;
-    }
+    float tC = mix(texCatmull(dataA, duv).r, texCatmull(dataB, duv).r, dataMix);   // °C
+    float x = clamp((tC - rampRange.x) / (rampRange.y - rampRange.x), 0.0, 1.0);
+    vec3 tc = texture(rampTex, vec2(x, 0.5)).rgb;
+    float lit = mix(0.26, 1.0, dayAmt);
+    col = mix(col, tc * lit, tempOpacity);
+    col += lights * (1.0 - dayAmt) * 0.45;   // cities still glow through at night
+  }
+  if (windOn > 0.5) {
+    vec4 tr = texture(trailTex, vUv);
+    float lit = mix(0.55, 1.0, dayAmt);
+    col = col * (1.0 - tr.a) + tr.rgb * lit;
   }
 
   // limb haze on the surface
@@ -132,7 +133,7 @@ export class Earth {
       dataA: { value: null }, dataB: { value: null }, dataMix: { value: 0 },
       rampTex: { value: makeRampTexture(TEMP_RAMP) }, rampRange: { value: new THREE.Vector2(TEMP_RAMP.min, TEMP_RAMP.max) },
       trailTex: { value: null }, sunDir: { value: new THREE.Vector3(1, 0, 0) },
-      tRange: { value: new THREE.Vector2(-50, 50) },
+      dataCubic: { value: tier.name === 'low' ? 0 : 1 },
       tempOn: { value: 1 }, tempOpacity: { value: 0.82 }, windOn: { value: 0 }, atmo: { value: tier.atmosphere }, hasData: { value: 0 },
       aqA: { value: null }, aqB: { value: null }, aqMix: { value: 0 }, aqOn: { value: 0 }, hasAq: { value: 0 },
       aqRamp: { value: makeRampTexture(AQI_RAMP) },
@@ -143,6 +144,7 @@ export class Earth {
   }
   setTier(tier) {
     this.uniforms.atmo.value = tier.atmosphere;
+    this.uniforms.dataCubic.value = tier.name === 'low' ? 0 : 1;
     if (tier.segments !== this.segments) {
       this.mesh.geometry.dispose();
       this.mesh.geometry = new THREE.SphereGeometry(1, tier.segments, tier.segments / 2);

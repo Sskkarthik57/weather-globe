@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#06070a" />
-  <meta name="description" content="A free, interactive 3D weather globe: temperature, wind and tropical cyclones from NOAA GFS and GDACS." />
+  <meta name="description" content="A free, interactive 3D weather globe: temperature, wind, air quality and tropical cyclones from NOAA GFS, GEFS-Aerosols and GDACS." />
   <title>Atmos Globe</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%239ad1ff' stroke-width='2'/%3E%3Cpath d='M3 16h26M16 3c-5 6-5 20 0 26M16 3c5 6 5 20 0 26' fill='none' stroke='%239ad1ff' stroke-width='1.5'/%3E%3C/svg%3E" />
 </head>
@@ -31,10 +31,13 @@
     <div class="search" role="search">
       <label for="search-input" class="sr-only">Search for a place</label>
       <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
-      <input id="search-input" type="search" placeholder="Search a city…" autocomplete="off" spellcheck="false"
+      <input id="search-input" type="search" placeholder="Search places or lat, lon…" autocomplete="off" spellcheck="false"
              role="combobox" aria-expanded="false" aria-controls="search-results" aria-autocomplete="list" />
-      <ul id="search-results" class="search-results" role="listbox" hidden></ul>
+      <ul id="search-results" class="search-results" role="listbox" aria-label="Search results" hidden></ul>
     </div>
+    <button id="locate-btn" class="icon-btn" aria-label="Weather at my location" title="Weather at my location">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="1.6"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg>
+    </button>
     <button id="settings-btn" class="icon-btn" aria-label="Settings" aria-haspopup="true" aria-expanded="false" aria-controls="settings">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
     </button>
@@ -82,6 +85,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2.5"/><path d="M12 4.5c-4.5 0-7.5 3-7.5 7.5M12 19.5c4.5 0 7.5-3 7.5-7.5M5 6.5C8 3 14 3 17 5M19 17.5C16 21 10 21 7 19"/></svg>
       <span>Cyclones</span>
     </button>
+    <button class="layer-btn" data-layer="rivers" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3c-1.5 3 2.5 5 1 8s-4 4-2.5 7.5M14 3c-1 2.5 1.5 4 .5 7s-4.5 4-3 8.5"/><path d="M20 3.5c-1 2 1 4 0 6.5s-4 3.5-4.5 6"/></svg>
+      <span>Rivers</span>
+    </button>
   </nav>
 
   <div id="banner" class="banner" role="alert" hidden></div>
@@ -92,6 +99,7 @@
       <div class="tabs" role="tablist">
         <button role="tab" id="tab-place" aria-controls="pane-place" aria-selected="true">Location</button>
         <button role="tab" id="tab-storms" aria-controls="pane-storms" aria-selected="false" hidden>Storms</button>
+        <button role="tab" id="tab-river" aria-controls="pane-river" aria-selected="false" hidden>River</button>
       </div>
       <button id="sheet-close" class="icon-btn small" aria-label="Close panel">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -99,6 +107,7 @@
     </div>
     <section id="pane-place" class="pane" role="tabpanel" aria-labelledby="tab-place"></section>
     <section id="pane-storms" class="pane" role="tabpanel" aria-labelledby="tab-storms" hidden></section>
+    <section id="pane-river" class="pane" role="tabpanel" aria-labelledby="tab-river" hidden></section>
   </aside>
 
   <div class="bottom">
@@ -123,12 +132,14 @@
     <span id="updated" class="updated"></span>
     <button id="credits-btn" class="link-btn" aria-expanded="false" aria-controls="credits">Sources &amp; credits</button>
     <div id="credits" class="credits" hidden>
-      <p><strong>Temperature &amp; wind:</strong> <a href="https://www.nco.ncep.noaa.gov/pmb/products/gfs/" target="_blank" rel="noopener">NOAA GFS</a> 1° forecast (public domain), via the <a href="https://registry.opendata.aws/noaa-gfs-bdp-pds/" target="_blank" rel="noopener">NOAA Open Data Dissemination program</a>.</p>
-      <p><strong>Air quality map:</strong> <a href="https://registry.opendata.aws/noaa-gefs/" target="_blank" rel="noopener">NOAA GEFS-Aerosols</a> surface PM2.5 and PM10 (public domain), converted to the US EPA AQI; natural sea-salt spray excluded. Model estimate, not station measurements.</p>
+      <p><strong>Temperature &amp; wind:</strong> <a href="https://www.nco.ncep.noaa.gov/pmb/products/gfs/" target="_blank" rel="noopener">NOAA GFS</a> 0.25° forecast, every 3 hours (public domain; wind shown at 0.5°), via the <a href="https://registry.opendata.aws/noaa-gfs-bdp-pds/" target="_blank" rel="noopener">NOAA Open Data Dissemination program</a>.</p>
+      <p><strong>Air quality map:</strong> <a href="https://registry.opendata.aws/noaa-gefs/" target="_blank" rel="noopener">NOAA GEFS-Aerosols</a> 0.25° surface PM2.5 and PM10 (public domain), converted to the US EPA AQI; natural sea-salt spray excluded. Model estimate, not station measurements.</p>
       <p><strong>Air quality on click:</strong> <a href="https://open-meteo.com/en/docs/air-quality-api" target="_blank" rel="noopener">Open-Meteo Air Quality API</a>, generated using Copernicus Atmosphere Monitoring Service (CAMS) information.</p>
       <p><strong>Tropical cyclones:</strong> <a href="https://www.gdacs.org" target="_blank" rel="noopener">GDACS</a> (European Commission JRC &amp; UN OCHA), track data from the originating warning centres. Not for decision-making — follow your national weather service.</p>
-      <p><strong>Local forecast &amp; place search:</strong> <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo.com</a> (CC BY 4.0).</p>
+      <p><strong>Local forecast:</strong> <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo.com</a> (CC BY 4.0).</p>
+      <p><strong>Place search:</strong> <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a> by komoot, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL), and <a href="https://open-meteo.com/en/docs/geocoding-api" target="_blank" rel="noopener">Open-Meteo geocoding</a> (<a href="https://www.geonames.org" target="_blank" rel="noopener">GeoNames</a>, CC BY 4.0).</p>
       <p><strong>Place names on click:</strong> <a href="https://nominatim.org" target="_blank" rel="noopener">Nominatim</a>, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL).</p>
+      <p><strong>Rivers:</strong> lines from <a href="https://www.naturalearthdata.com" target="_blank" rel="noopener">Natural Earth</a> 1:10m (public domain); source, mouth, tributaries and dams from <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a> (CC0); photos and summaries from <a href="https://en.wikipedia.org" target="_blank" rel="noopener">Wikipedia</a> (CC BY-SA). Community data; may be incomplete.</p>
       <p><strong>Earth imagery:</strong> NASA Earth Observatory — Blue Marble Next Generation (Reto Stöckli) and Black Marble 2016 city lights (NASA / NOAA, Suomi NPP VIIRS).</p>
       <p>Rendering: <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> (MIT). Font: Inter (SIL OFL).</p>
     </div>

@@ -6,3 +6,4 @@ public/data/
 screenshots/
 *.log
 __pycache__/
+scripts/.cache/

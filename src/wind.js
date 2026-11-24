@@ -13,13 +13,10 @@ void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 const COMMON = /* glsl */`
 uniform sampler2D dataA, dataB;
 uniform float dataMix;
-uniform vec2 wRange;
 ${DATA_UV_GLSL}
 vec2 windAt(vec2 p) {
   vec2 duv = gridUv(p, vec2(textureSize(dataA, 0)));
-  vec2 a = texture(dataA, duv).gb;
-  vec2 b = texture(dataB, duv).gb;
-  return mix(vec2(wRange.x), vec2(wRange.y), mix(a, b, dataMix)); // m/s, x east, y north
+  return mix(texture(dataA, duv).rg, texture(dataB, duv).rg, dataMix); // m/s, x east, y north
 }
 float hash(vec2 p) { p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
 vec2 randomPos(vec2 seed) {
@@ -90,7 +87,7 @@ export class WindParticles {
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.quadGeo = new THREE.PlaneGeometry(2, 2);
     this.shared = {
-      dataA: { value: null }, dataB: { value: null }, dataMix: { value: 0 }, wRange: { value: new THREE.Vector2(-30, 30) },
+      dataA: { value: null }, dataB: { value: null }, dataMix: { value: 0 },
     };
     this.updateMat = new THREE.ShaderMaterial({
       vertexShader: QUAD_VERT, fragmentShader: UPDATE_FRAG, depthTest: false, depthWrite: false,

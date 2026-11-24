@@ -6,20 +6,25 @@ A spinning 3D Earth in your browser. It shows:
 - **Air quality**: a pollution map showing the US Air Quality Index (AQI), Good to Hazardous. Clicking a place shows its AQI score, PM2.5, PM10, ozone and more.
 - **Wind**: glowing streaks that flow with the wind 10 m above the ground.
 - **Cyclones**: active tropical storms worldwide, with past and forecast tracks.
+- **Rivers**: about 1,400 major rivers on every continent, with pulses that flow downstream. Click a river (or search for it, e.g. "Ganga") to see where it starts (the mountain, glacier or lake), where it drains, its tributaries and the dams on it, all marked on the globe.
 
-You can drag the **time slider** (or press play) to move through the next 3 days. **Click anywhere** for the local forecast, or **search** for a city.
+You can drag the **time slider** (or press play) to move through the next 3 days in 3-hour steps. **Click anywhere** for the local forecast, use the **⌖ button** for your own location, or **search**: cities, towns, villages, suburbs, landmarks, airports, peaks, or coordinates like `17.38, 78.48`. When you're zoomed in, places near the area on screen come first.
 
 Everything is free. There are no accounts and no API keys.
 
 | What | Where it comes from |
 |---|---|
-| Temperature and wind maps | NOAA GFS weather model (US government, public domain), downloaded by our own script |
-| Air-quality map | NOAA GEFS-Aerosols model: surface PM2.5 and PM10 (public domain), turned into US AQI by our script, with natural sea-salt spray left out |
+| Temperature and wind maps | NOAA GFS weather model at 0.25° (about 28 km; wind shown at 0.5°), every 3 hours (US government, public domain), downloaded by our own script |
+| Air-quality map | NOAA GEFS-Aerosols model at 0.25°: surface PM2.5 and PM10 (public domain), turned into US AQI by our script, with natural sea-salt spray left out |
 | Air quality when you click | Open-Meteo Air Quality API (CAMS, Copernicus) |
 | Cyclones | GDACS (European Commission and United Nations) |
-| Local forecast and city search | Open-Meteo.com (free for non-commercial use, CC BY 4.0) |
+| Local forecast | Open-Meteo.com (free for non-commercial use, CC BY 4.0) |
+| Place search | Photon by komoot (OpenStreetMap data, ODbL; free, no key, fair use) plus Open-Meteo geocoding (GeoNames, CC BY 4.0) |
 | Place names when you click | Nominatim / OpenStreetMap |
-| Earth pictures | NASA Blue Marble and Black Marble |
+| Earth pictures | NASA Blue Marble (day: 8k ≈ 4.9 km per pixel on fast PCs, 4k/2k otherwise) and Black Marble (night lights) |
+| River lines | Natural Earth 1:10m rivers (public domain) |
+| River source, mouth, tributaries, dams | Wikidata (CC0), collected by our own script |
+| River photo and summary | Wikipedia (CC BY-SA), loaded when you click a river |
 
 ---
 
@@ -51,19 +56,27 @@ The Earth pictures are already in `public\textures`. If you ever need to downloa
 
 ## 2. Get fresh weather data
 
-This takes about a minute and downloads about 4 MB:
+This takes 2–3 minutes. It downloads only the fields it needs from NOAA (roughly 100–200 MB, several files at a time):
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\update_data.py
 ```
 
-It writes small files into `public\data` (about 4 MB in total). Run it again whenever you want newer data.
+It writes compact `.bin` files into `public\data` (about 34 MB in total for 25 three-hourly steps: temperature ≈ 445 KB, wind ≈ 275 KB and air quality ≈ 620 KB per step). The values are exact to 0.1 °C and 0.2 m/s, and they don't go through image decoding, so every browser shows the same numbers. Visitors don't download all of it: a PC loads temperature and wind in the background (about 18 MB), a phone only the hours around the one being viewed, and air quality loads only when that layer is switched on.
+
+**Why the map and the click panel can still differ a little:** the map is NOAA's global model (one value per ~28 km square, shown at the slider time), while the panel asks Open-Meteo for its best local model (1–11 km) for *right now*. The panel prints the map's own value too ("Globe map … here"), and the hover readout always matches the map colours exactly. For air quality, the panel's CAMS score also counts ozone and NO₂, which the map (PM2.5 and PM10 only) does not.
 
 **How fresh is the data?**
 
 - NOAA releases a new weather run (and air-quality run) every 6 hours, about 4–5 hours after 00, 06, 12 and 18 UTC. That's the fastest any free global model updates.
 - The online site checks every hour and republishes as soon as a new run appears, so it's never more than about an hour behind NOAA. Cyclones and air quality are refreshed at least every 3 hours.
 - The click panel (local forecast and AQI) is always live: it asks Open-Meteo at the moment you click.
+
+**River data** is separate and rarely changes, so it's stored in git (`public\rivers`) and doesn't need the robot. To rebuild it (about 10 minutes, mostly waiting on Wikidata), run:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\build_rivers.py
+```
 
 ## 3. Run it on your PC
 
@@ -146,8 +159,10 @@ Settings (⚙) also has a quality override (Auto / Low / Med / High), °C or °F
 index.html, src/          the website (three.js and custom GPU shaders)
 public/textures/          NASA Earth pictures (resized)
 public/data/              weather data made by the script (not stored in git)
-scripts/update_data.py    downloads GFS + cyclones, writes PNG + JSON
+scripts/update_data.py    downloads GFS, GEFS-Aerosols + cyclones, writes .bin grids + JSON
+src/decode.worker.js      unpacks the .bin grids in the background (keeps the globe smooth)
 scripts/grib2.py          small built-in reader for NOAA's GRIB2 weather format
+scripts/build_rivers.py   Natural Earth rivers + Wikidata facts -> public/rivers (run rarely)
 scripts/prepare_textures.py   one-time download of the NASA pictures
 scripts/check*.mjs        automated browser tests (screenshots in /screenshots)
 .tools/                   portable Node.js (not stored in git)

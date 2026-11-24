@@ -77,19 +77,41 @@ for (const s of sizes) {
   const place = await page.evaluate(() => document.querySelector('.place-title')?.textContent + ' | ' + document.querySelector('.now-temp')?.textContent +
     ' | AQI ' + document.querySelector('.aq-score')?.textContent + ' ' + document.querySelector('.aq-chip')?.textContent);
   await page.screenshot({ path: `${out}/${s.name}-3-place.png` });
-  // search
+  // search: a suburb that only OpenStreetMap knows, then a city, then coordinates
   await page.click('#sheet-close');
+  await page.fill('#search-input', 'Kondapur');
+  await page.waitForSelector('#search-results li[data-i]', { timeout: 10000 }).catch(() => errors.push('search (suburb) gave no results'));
+  const suburbResults = await page.evaluate(() => [...document.querySelectorAll('#search-results li[data-i]')].map((li) => li.innerText.replace(/\s+/g, ' ')).slice(0, 4));
+  await page.screenshot({ path: `${out}/${s.name}-4a-search-list.png` });
   await page.fill('#search-input', 'Delhi');
-  await page.waitForSelector('#search-results li[role=option]:not(.msg)', { timeout: 10000 }).catch(() => errors.push('search gave no results'));
+  await page.waitForTimeout(150);
+  await page.waitForFunction(() => document.querySelector('#search-results li[data-i] .sr-name')?.textContent.includes('Delhi'), null, { timeout: 10000 })
+    .catch(() => errors.push('search (city) gave no results'));
   await page.keyboard.press('Enter');
   await page.waitForTimeout(3500);
   const searched = await page.evaluate(() => document.querySelector('.place-title')?.textContent + ' | AQI ' + document.querySelector('.aq-score')?.textContent + ' ' + document.querySelector('.aq-chip')?.textContent);
+  await page.click('#sheet-close');
+  await page.fill('#search-input', '17.385, 78.487');
+  await page.waitForSelector('#search-results li[data-i]', { timeout: 5000 }).catch(() => errors.push('coordinate search gave no result'));
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.now-temp', { timeout: 20000 }).catch(() => errors.push('coordinate search did not open the panel'));
+  await page.waitForTimeout(2500);
+  const coordPlace = await page.evaluate(() => document.querySelector('.place-title')?.textContent + ' | ' +
+    [...document.querySelectorAll('#pane-place .note')].map((n) => n.textContent).find((t) => t.startsWith('Globe map')));
+  // now zoomed in over Hyderabad: the same query should rank the nearby suburb first
+  await page.click('#sheet-close');
+  await page.fill('#search-input', 'Kondapur ');
+  await page.waitForFunction(() => document.querySelector('#search-results li[data-i] .sr-name')?.textContent.includes('Kondapur'), null, { timeout: 10000 }).catch(() => {});
+  const nearbyFirst = await page.evaluate(() => document.querySelector('#search-results li[data-i]')?.innerText.replace(/\s+/g, ' '));
+  if (!/Suburb|Hyderabad|Serilingampalle/i.test(nearbyFirst || '')) errors.push(`location-biased search did not rank the nearby suburb first: ${nearbyFirst}`);
+  await page.keyboard.press('Escape');
+  Object.assign(info, { suburbResults, coordPlace, nearbyFirst });
   Object.assign(info, { aqLayer });
   await page.screenshot({ path: `${out}/${s.name}-4-search.png` });
   let extra = {};
   if (!s.mobile) {
     // zoom out, rotate toward the sunset side to see the day/night terminator
-    await page.click('#sheet-close');
+    if (await page.isVisible('#sheet-close')) await page.click('#sheet-close');
     await page.mouse.move(s.width / 2, s.height / 2);
     for (let i = 0; i < 8; i++) { await page.mouse.wheel(0, 400); await page.waitForTimeout(60); }
     await page.waitForTimeout(800);
@@ -111,8 +133,20 @@ for (const s of sizes) {
     const legendF = await page.textContent('#legend');
     await page.screenshot({ path: `${out}/${s.name}-6-settings.png` });
     await page.click('[data-units="metric"]');
+    // force the high tier: the 8k day image should load in the background once the globe is idle
+    await page.click('[data-quality="high"]');
     await page.keyboard.press('Escape');
-    extra = { playFrom: t0, playTo: t1, legendImperial: legendF, settingsClosed: await page.isHidden('#settings') };
+    await page.waitForFunction(() => /earth image 8k|not supported/.test(document.getElementById('fps')?.textContent || ''), null, { timeout: 30000 })
+      .catch(() => errors.push('8k day image did not load on the high tier'));
+    const earthImage = await page.evaluate(() => (document.getElementById('fps')?.textContent.match(/earth image .*/) || [''])[0]);
+    await page.mouse.move(s.width / 2, s.height / 2);
+    for (let i = 0; i < 14; i++) { await page.mouse.wheel(0, -500); await page.waitForTimeout(40); }
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: `${out}/${s.name}-7-zoomed-high.png` });
+    await page.click('#settings-btn');
+    await page.click('[data-quality="auto"]');
+    await page.keyboard.press('Escape');
+    extra = { playFrom: t0, playTo: t1, legendImperial: legendF, settingsClosed: await page.isHidden('#settings'), earthImage };
   }
   Object.assign(info, extra);
   console.log(`\n=== ${s.name}`);
